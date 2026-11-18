@@ -1,4 +1,4 @@
-// Token Radar (radar-2): a program/v1 entry for make.fun's token-radar-01.
+// Token Radar (radar-3): a program/v1 entry for make.fun's token-radar-01.
 //
 // Reads the sealed DefiLlama snapshot, scores every rankable pre-token
 // protocol with the model in lib/model.ts, and writes the entry's outputs:
@@ -76,7 +76,7 @@ function copyFiles(from: string, to: string): string[] {
 const dash = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
 if (shots.length < 3) {
-  process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view\n`);
+  process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 4, the board, a detail view, a filtered view and the model panel\n`);
   process.exit(1);
 }
 for (const name of shots) {

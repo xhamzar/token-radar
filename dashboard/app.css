@@ -109,19 +109,32 @@ td.num, th.num { text-align: right; }
 .status.live { color: var(--amber); border-color: rgba(255, 180, 84, .45); }
 .rank-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; border-radius: 8px; background: var(--bg2); border: 1px solid var(--line2); font-weight: 800; }
 .watch { color: var(--cyan); font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
+.hot { color: var(--amber); font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; margin-left: 6px; }
+.hot::before { content: "\25b2 "; }
+
+/* pager: 25 rows a page, sorting and filters keep working across pages */
+.pager { display: flex; gap: 6px; align-items: center; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+.page-btn {
+  background: var(--panel); border: 1px solid var(--line2); color: var(--text);
+  border-radius: 8px; padding: 7px 11px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; min-width: 36px;
+}
+.page-btn:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+.page-btn.current { background: var(--cyan); border-color: var(--cyan); color: #04121c; }
+.page-btn:disabled { opacity: .4; cursor: default; }
+.page-ellipsis { color: var(--faint); padding: 0 2px; }
 .empty { padding: 36px 24px; text-align: center; }
 .empty h2 { margin: 0 0 6px; font-size: 19px; }
 .empty p { margin: 0 0 14px; color: var(--muted); }
 .button.primary { background: var(--cyan); border-color: var(--cyan); color: #04121c; }
 
 /* model panel */
-.model { margin-top: 16px; padding: 20px 22px; }
+.model { margin-top: 16px; padding: 18px 22px; }
 .model h2 { margin: 0 0 6px; font-size: 19px; }
-.model p { margin: 0 0 12px; }
+.model p { margin: 0 0 10px; }
 .formula {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px;
-  background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 13px 15px;
-  margin-bottom: 12px; color: var(--cyan); line-height: 1.7; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 11px 14px;
+  margin-bottom: 10px; color: var(--cyan); line-height: 1.65; word-break: break-word;
 }
 .model-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 4px; }
 .model-cell { background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px; }
@@ -133,31 +146,34 @@ td.num, th.num { text-align: right; }
 .mult-table th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
 .mult-table td.num { text-align: right; }
 
-/* detail dialog */
+/* detail dialog: two columns, so the whole farm plan fits one screen */
 dialog.detail {
   background: var(--panel); color: var(--text); border: 1px solid var(--line2);
-  border-radius: 16px; padding: 0; max-width: 760px; width: calc(100% - 32px);
+  border-radius: 16px; padding: 0; max-width: 1020px; width: calc(100% - 32px);
+  max-height: 94vh; overflow-y: auto;
   box-shadow: 0 24px 80px rgba(0, 0, 0, .6);
 }
 dialog.detail::backdrop { background: rgba(3, 6, 14, .72); }
-.detail-head { display: flex; justify-content: space-between; gap: 16px; padding: 16px 22px 0; }
+.detail-head { display: flex; justify-content: space-between; gap: 16px; padding: 14px 22px 10px; border-bottom: 1px solid var(--line); }
 .detail-head h2 { margin: 2px 0 3px; font-size: 22px; }
 .detail-head .brand-name { color: var(--cyan); font-size: 13px; font-weight: 700; }
 .close { background: var(--bg2); border: 1px solid var(--line2); color: var(--text); border-radius: 9px; padding: 8px 13px; font: inherit; cursor: pointer; height: fit-content; }
-.detail-section { padding: 13px 22px; border-top: 1px solid var(--line); }
-.detail-section:first-of-type { border-top: none; }
-.detail-section h3 { margin: 0 0 8px; font-size: 15px; }
-.equation { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
-.equation > div { background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; }
+.detail-body { display: grid; grid-template-columns: 1.05fr 1fr; }
+.detail-col.right { border-left: 1px solid var(--line); }
+.detail-section { padding: 11px 20px; }
+.detail-section + .detail-section { border-top: 1px solid var(--line); }
+.detail-section h3 { margin: 0 0 7px; font-size: 15px; }
+.equation { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.equation > div { background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
 .equation span { display: block; font-size: 12px; color: var(--muted); }
-.equation b { font-size: 17px; }
-.equation .total { border-color: rgba(61, 245, 166, .5); }
+.equation b { font-size: 16px; }
+.equation .total { border-color: rgba(61, 245, 166, .5); grid-column: span 3; display: flex; justify-content: space-between; align-items: baseline; }
 .equation .total b { color: var(--green); }
-ol.steps { margin: 0; padding-left: 20px; }
-ol.steps li { margin-bottom: 8px; }
-ol.steps li b { display: block; font-weight: 600; }
-ol.steps .cost { color: var(--muted); font-size: 13px; }
-.compare td, .compare th { padding: 5px 10px; }
+ol.steps { margin: 0; padding-left: 20px; font-size: 13.5px; line-height: 1.45; }
+ol.steps li { margin-bottom: 6px; }
+ol.steps li b { font-weight: 600; }
+ol.steps .cost { color: var(--muted); font-size: 12.5px; }
+.compare td, .compare th { padding: 4px 10px; }
 .compare { width: 100%; font-size: 14px; border-collapse: collapse; }
 .compare th { text-align: left; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--line2); }
 .compare td { border-bottom: 1px solid var(--line); }
@@ -168,5 +184,8 @@ ol.steps .cost { color: var(--muted); font-size: 13px; }
   .lede { grid-template-columns: 1fr; }
   .model-grid { grid-template-columns: 1fr 1fr; }
   .equation { grid-template-columns: 1fr 1fr; }
+  .equation .total { grid-column: span 2; }
+  .detail-body { grid-template-columns: 1fr; }
+  .detail-col.right { border-left: none; border-top: 1px solid var(--line); }
   .lede h1 { font-size: 24px; }
 }
