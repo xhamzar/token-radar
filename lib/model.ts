@@ -30,17 +30,10 @@
 //   momentumMultiplier = 1 + 0.15 x youth x growthPos,
 //         youth = clamp((365 - age_days) / 365, 0, 1),
 //         growthPos = clamp(change_7d, 0, 100) / 100
-//   sizeCurve(tvl)     = 10 ^ (a + b x log10(tvl)): least squares of
-//         log10(market cap) on log10(TVL) over the traded tokens.
-//   premium(category)  = categoryMultiple / globalMedian: the category's
-//         measured multiple relative to the market's own.
-//   launchOdds         = the category's ever-launched rate (its traded
-//         share, shrunk toward the global rate), aged down the longer the
-//         protocol has run with no token.
-//   valueIfLaunches    = sizeCurve x premium x growth x maturity x chain x momentum
-//   impliedValue       = max(1, round(valueIfLaunches x launchOdds))
-//   impliedLow/High    = the same product with the category's shrunk
-//         first/third ratio quartile in place of the median multiple
+//   sizeCurve(tvl) = 10^(a + b x log10(tvl)), least squares on the traded tokens; premium = categoryMultiple / globalMedian.
+//   launchOdds = the category's ever-launched rate, shrunk to the global rate, aged down with time and no token.
+//   valueIfLaunches = sizeCurve x premium x growth x maturity x chain x momentum; impliedValue = max(1, round(valueIfLaunches x launchOdds)).
+//   impliedLow/High = the same product with the category's shrunk quartiles in place of the median multiple.
 //
 // The board ranks pre-token protocols only. A protocol is rankable when it
 // records no token (no market cap, no CoinGecko id, no symbol), is not a
@@ -49,10 +42,7 @@
 // early radar cannot smuggle a wrapped product back in under the floor.
 // Live-token protocols are kept apart and shown with their market caps; the
 // model is also run over them as a calibration check (see calibrateModel),
-// which the dashboard reports next to the formula. It is also tested out of
-// sample (see outOfSample): every traded token is held out in turn and priced
-// from the rest, and the newer half is priced from a fit on the older half,
-// so the dashboard reports a miss the model earned on tokens it never saw.
+// which the dashboard reports next to the formula.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -99,7 +89,6 @@ export interface ModelConstants {
   momentum_growth_cap: number;
   drop_share: number;
   odds_prior: number;
-  bootstrap_refits: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -123,7 +112,6 @@ export const MODEL: ModelConstants = {
   momentum_growth_cap: 100,
   drop_share: 0.07,
   odds_prior: 10,
-  bootstrap_refits: 200,
 };
 
 /** The model's version label: the dashboard names it. */
@@ -141,14 +129,8 @@ export interface FarmStep {
 
 /** One row's farm economics at its own deposit: the expected drop, the fees, the net, the break-even odds and the verdict. */
 export interface FarmEcon {
-  deposit_usd: number;
-  slice_usd: number;
-  fees_usd: number;
-  hours: number;
-  net_usd: number;
-  net_per_hour_usd: number;
-  break_even_odds: number;
-  verdict: 'FARM' | 'THIN' | 'SKIP';
+  deposit_usd: number; slice_usd: number; fees_usd: number; hours: number;
+  net_usd: number; net_per_hour_usd: number; break_even_odds: number; verdict: 'FARM' | 'THIN' | 'SKIP';
 }
 
 /** One row of board.json: the ranked board's row. */
@@ -174,9 +156,6 @@ export interface BoardRow {
     chain_multiplier: number;
     momentum_multiplier: number;
     launch_odds: number;
-    value_if_launches_usd: number;
-    curve_value_usd: number;
-    premium: number;
     age_days: number | null;
   };
   farm_econ: FarmEcon;
@@ -204,9 +183,6 @@ export interface RadarRow {
   chain_multiplier: number;
   momentum_multiplier: number;
   launch_odds: number;
-  value_if_launches_usd: number;
-  curve_value_usd: number;
-  premium: number;
   farm_econ: FarmEcon;
   farm_steps: string[];
 }
@@ -240,37 +216,19 @@ export interface Calibration {
 }
 
 /** The fitted size curve: log10(market cap) = a + b x log10(TVL) over the traded tokens. */
-export interface SizeCurve {
-  a: number;
-  b: number;
-  n: number;
-  r2: number;
-}
+export interface SizeCurve { a: number; b: number; n: number; r2: number; }
 
 /** The out-of-sample test: leave-one-out and time-split misses against a flat multiple, the ablation, and how often the printed band holds. */
 export interface OosResult {
-  loo_n: number;
-  loo_median_miss: number;
-  loo_within3x: number;
-  loo_flat_miss: number;
-  time_n: number;
-  time_median_miss: number;
-  time_within3x: number;
-  time_flat_miss: number;
-  bands_hold: number;
-  bands_n: number;
+  loo_n: number; loo_median_miss: number; loo_within3x: number; loo_flat_miss: number;
+  time_n: number; time_median_miss: number; time_within3x: number; time_flat_miss: number;
+  bands_hold: number; bands_n: number;
   ablation: { variant: string; loo_miss: number }[];
 }
 
 /** The audit: every one of the snapshot's protocols, counted under exactly one disposition. */
 export interface AuditCounts {
-  ranked: number;
-  already_token: number;
-  bridge: number;
-  liquid_staking: number;
-  exchange: number;
-  versioned: number;
-  wrapped: number;
+  ranked: number; already_token: number; bridge: number; liquid_staking: number; exchange: number; versioned: number; wrapped: number;
 }
 
 /** Everything the dashboard needs: the board, the live set, the multiples, the model. */
@@ -295,7 +253,6 @@ export interface RadarData {
   curve: SizeCurve;
   oos: OosResult;
   audit: AuditCounts;
-  odds_global: number;
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -552,8 +509,6 @@ export function impliedValue(
   impliedHigh: number;
   valueIfLaunches: number;
   launchOdds: number;
-  curveValueUsd: number;
-  premium: number;
   categoryMultiple: number;
   categorySample: number;
   growthMult: number;
@@ -589,8 +544,6 @@ export function impliedValue(
     impliedHigh,
     valueIfLaunches: Math.max(1, Math.round(valueIfLaunches)),
     launchOdds,
-    curveValueUsd: Math.max(1, Math.round(curveVal)),
-    premium: round4(premium),
     categoryMultiple: multiple,
     categorySample: sample,
     growthMult,
@@ -783,9 +736,6 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       chain_multiplier: round4(s.chainMult),
       momentum_multiplier: round4(s.momentumMult),
       launch_odds: s.launchOdds,
-      value_if_launches_usd: s.valueIfLaunches,
-      curve_value_usd: s.curveValueUsd,
-      premium: s.premium,
       age_days: s.age,
     },
     farm_econ: s.econ,
@@ -1095,9 +1045,6 @@ export function radarRow(row: BoardRow): RadarRow {
     chain_multiplier: row.model.chain_multiplier,
     momentum_multiplier: row.model.momentum_multiplier,
     launch_odds: row.model.launch_odds,
-    value_if_launches_usd: row.model.value_if_launches_usd,
-    curve_value_usd: row.model.curve_value_usd,
-    premium: row.model.premium,
     farm_econ: row.farm_econ,
     farm_steps: row.farm_steps,
   };
@@ -1138,7 +1085,6 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     curve,
     oos,
     audit,
-    odds_global: odds.global,
     rows: board.map(radarRow),
     live,
   };
