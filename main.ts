@@ -1,4 +1,4 @@
-// Token Radar (radar-3): a program/v1 entry for make.fun's token-radar-01.
+// Token Radar (radar-5): a program/v1 entry for make.fun's token-radar-01.
 //
 // Reads the sealed DefiLlama snapshot, scores every rankable pre-token
 // protocol with the model in lib/model.ts, and writes the entry's outputs:
@@ -91,6 +91,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: calibration median implied/mcap ${radar.calibration.median_implied_to_mcap} over ${radar.calibration.sample} live-token protocols\n` +
+    `token radar: calibration median implied/mcap ${radar.calibration.median_implied_to_mcap} over ${radar.calibration.sample} comparable traded tokens\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dash.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

@@ -1,4 +1,4 @@
-// Token Radar's value model (radar-4): the snapshot's own market prices the
+// Token Radar's value model (radar-5): the snapshot's own market prices the
 // protocols that have no token yet.
 //
 // Idea: a protocol's token, if it launched today, would be priced the way the
@@ -12,7 +12,11 @@
 // score every row, and every number below is computed from the sealed
 // snapshot at run time. Each row also carries an implied range, low to high,
 // from the quartiles of its category's market ratios, so the point estimate
-// never pretends to be more precise than the market data behind it.
+// never pretends to be more precise than the market data behind it. The
+// size curve is fitted on comparable launches only: a wrapped, staked,
+// bridged, exchange or versioned product never sets the market's multiple,
+// because its mcap/TVL is not a launch price — the same exclusion rule the
+// board applies to its own rows.
 //
 //   categoryMultiple(category)
 //       = (n x median + PRIOR_STRENGTH x globalMedian) / (n + PRIOR_STRENGTH)
@@ -24,16 +28,26 @@
 //         observations is not a median — so thinner categories price at the
 //         global median. The result is clamped to [MULTIPLE_MIN, MULTIPLE_MAX].
 //         The range's quartiles are shrunk the same way, so low <= implied <= high.
-//   growthMultiplier   = 1 + clamp(change_7d, -50, 300) / 100 x 0.6
-//   maturityMultiplier = 0.70 + min(age_days, 1095) / 1095 x 0.30
-//   chainMultiplier    = 1 + 0.02 x min(chains - 1, 10)
-//   momentumMultiplier = 1 + 0.15 x youth x growthPos,
+//   growthMultiplier   = 1 + clamp(change_7d, -50, 300) / 100 x 0.2
+//   maturityMultiplier = 0.70 + min(age_days, 1095) / 1095 x 0.15
+//   chainMultiplier    = 1 + 0.01 x min(chains - 1, 10)
+//   momentumMultiplier = 1 + 0.05 x youth x growthPos,
 //         youth = clamp((365 - age_days) / 365, 0, 1),
 //         growthPos = clamp(change_7d, 0, 100) / 100
-//   sizeCurve(tvl) = 10^(a + b x log10(tvl)), least squares on the traded tokens; premium = categoryMultiple / globalMedian.
+//   sizeCurve(tvl) = 10^(a + b x log10(tvl)), least squares on the comparable
+//         launches; premium = categoryMultiple / globalMedian.
 //   launchOdds = the category's ever-launched rate, shrunk to the global rate, aged down with time and no token.
 //   valueIfLaunches = sizeCurve x premium x growth x maturity x chain x momentum; impliedValue = max(1, round(valueIfLaunches x launchOdds)).
 //   impliedLow/High = the same product with the category's shrunk quartiles in place of the median multiple.
+//
+// The factor weights are gentle on purpose: the leave-one-out ablation
+// (see outOfSample) shows the bare curve beats the full factor model on
+// held-out traded tokens, so the factors stay small — the brief asks for a
+// protocol's growth and its time with no token, and the model answers it
+// without letting either dominate the curve. Rank stability is measured,
+// not asserted: bootstrapRankRanges re-fits the curve and the multiples on
+// 200 resamples of the comps and re-ranks the board each time, so every row
+// carries the range of ranks the data actually supports.
 //
 // The board ranks pre-token protocols only. A protocol is rankable when it
 // records no token (no market cap, no CoinGecko id, no symbol), is not a
@@ -92,22 +106,22 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  prior_strength: 4,
+  prior_strength: 10,
   min_category_sample: 3,
   ratio_floor: 0.005,
   ratio_cap: 3,
   multiple_min: 0.05,
   multiple_max: 1.5,
-  growth_weight: 0.6,
+  growth_weight: 0.2,
   growth_floor: -50,
   growth_cap: 300,
   maturity_floor: 0.7,
-  maturity_range: 0.3,
+  maturity_range: 0.15,
   maturity_days: 1095,
   unknown_age_days: 365,
-  chain_step: 0.02,
+  chain_step: 0.01,
   chain_max_extra: 10,
-  momentum_strength: 0.15,
+  momentum_strength: 0.05,
   momentum_age_days: 365,
   momentum_growth_cap: 100,
   drop_share: 0.07,
@@ -115,7 +129,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 
 /** How many live-token protocols the Live tab carries, by market cap. */
 export const LIVE_ROWS = 48;
@@ -136,6 +150,8 @@ export interface FarmEcon {
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
   rank: number;
+  rank_low: number;
+  rank_high: number;
   slug: string;
   name: string;
   category: string | null;
@@ -165,6 +181,8 @@ export interface BoardRow {
 /** The dashboard's compact view of one row, with the board's own farm plan. */
 export interface RadarRow {
   rank: number;
+  rank_low: number;
+  rank_high: number;
   slug: string;
   name: string;
   category: string | null;
@@ -231,6 +249,27 @@ export interface AuditCounts {
   ranked: number; already_token: number; bridge: number; liquid_staking: number; exchange: number; versioned: number; wrapped: number;
 }
 
+/** The bootstrap's headline: how many of the top 20 rows hold their place across refits. */
+export interface BootstrapResult {
+  refits: number;
+  top20_hold: number;
+}
+
+/** One age bucket's launch record: the traded share of the protocols that old. */
+export interface TenureBucket {
+  bucket: string;
+  total: number;
+  launched: number;
+  share: number;
+}
+
+/** The scatter chart's data: the comps as (TVL, market cap) points, and the P25–P75 band around the curve. */
+export interface ScatterData {
+  points: [number, number][];
+  band_low: number;
+  band_high: number;
+}
+
 /** Everything the dashboard needs: the board, the live set, the multiples, the model. */
 export interface RadarData {
   as_of: string;
@@ -253,6 +292,9 @@ export interface RadarData {
   curve: SizeCurve;
   oos: OosResult;
   audit: AuditCounts;
+  bootstrap: BootstrapResult;
+  tenure: TenureBucket[];
+  scatter: ScatterData;
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -421,9 +463,22 @@ export function categoryQuartilesFor(p: SnapshotProtocol, multiples: MeasuredMul
   return { low: entry.quartile_low, high: entry.quartile_high };
 }
 
-/** The traded tokens usable as comps: a market cap and a TVL to fit on. */
+/** The traded tokens usable as comps: a market cap and a TVL to fit on, and a
+ *  genuine comparable launch. The board's own exclusion rule applies here
+ *  too, so a bridge, liquid-staking, restaking or exchange product, a
+ *  versioned pool, or a wrapped or staked product never sets the market's
+ *  multiple — its mcap/TVL is a peg or a wrapper's ratio, not a launch
+ *  price. On this snapshot that leaves 92 comps of the 128 traded tokens. */
 function compsOf(snapshot: Snapshot): SnapshotProtocol[] {
-  return snapshot.protocols.filter((p) => !isPreToken(p) && (p.mcap_usd ?? 0) > 0 && p.tvl_usd > 0);
+  return snapshot.protocols.filter(
+    (p) =>
+      !isPreToken(p) &&
+      (p.mcap_usd ?? 0) > 0 &&
+      p.tvl_usd > 0 &&
+      !EXCLUDED_CATEGORIES.has(p.category ?? '') &&
+      !VERSIONED.test(p.name) &&
+      !isWrappedProduct(p),
+  );
 }
 
 /** Least squares of log10(market cap) on log10(TVL): the market's own size curve. */
@@ -555,18 +610,20 @@ export function impliedValue(
 }
 
 /**
- * The calibration check: run the same model over every live-token protocol
- * with a market cap and compare what it implies with what the market actually
- * pays. A median ratio near 1 means the model prices the market's own tokens
- * about right; the dashboard reports it beside the formula.
+ * The calibration check: run the same model over the comps — the comparable
+ * launches the curve is fitted on — and compare what it implies with what
+ * the market actually pays. A median ratio near 1 means the model prices the
+ * market's own tokens about right; the dashboard reports it beside the
+ * formula. It is measured on the comps, not on every traded token: a
+ * wrapped or bridge product's market cap is not a price the model claims
+ * to reproduce.
  */
 export function calibrateModel(snapshot: Snapshot, multiples: MeasuredMultiples, curve: SizeCurve, odds: OddsTable, model: ModelConstants = MODEL): Calibration {
   const ratios: number[] = [];
-  for (const p of snapshot.protocols) {
-    if (isPreToken(p) || p.mcap_usd === null || p.mcap_usd <= 0) continue;
+  for (const p of compsOf(snapshot)) {
     // A traded token already launched: calibration compares the value-if-launches, not the odds-weighted implied value.
     const { valueIfLaunches } = impliedValue(p, snapshot.as_of, multiples, curve, odds, model);
-    ratios.push(valueIfLaunches / p.mcap_usd);
+    ratios.push(valueIfLaunches / (p.mcap_usd as number));
   }
   return { sample: ratios.length, median_implied_to_mcap: round4(median(ratios)), median_mcap_to_tvl: round4(multiples.global) };
 }
@@ -689,8 +746,111 @@ export function auditCounts(snapshot: Snapshot): AuditCounts {
   return out;
 }
 
+/** How many times the bootstrap re-fits the model, and on which seed. */
+export const BOOTSTRAP_REFITS = 200;
+export const BOOTSTRAP_SEED = 20261114;
+
+/** A seeded PRNG (mulberry32): deterministic, so two runs bootstrap identically. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** One row's rank range across the bootstrap refits, and how often it holds the top 20. */
+export interface RankRange {
+  low: number;
+  high: number;
+  top20_frac: number;
+}
+
+/**
+ * Rank stability, measured: resample the comps with replacement, re-fit the
+ * size curve and re-measure the multiples from the resample, re-score every
+ * board protocol under the refit model, and re-rank. The launch odds and the
+ * per-row factors do not depend on the comps, so they stay fixed; only the
+ * curve and the premiums move. Each row's range is the 10th–90th percentile
+ * of the ranks it took across the refits — the ranks the data actually
+ * supports, not a confidence interval drawn from a formula. The top of the
+ * board is tightly packed in implied value, so the ranges are wide there:
+ * that is the honest read, and the point rank alone overstates how much the
+ * data separates the top rows.
+ */
+export function bootstrapRankRanges(
+  protocols: SnapshotProtocol[],
+  asOf: string,
+  comps: SnapshotProtocol[],
+  odds: OddsTable,
+  model: ModelConstants,
+  refits: number = BOOTSTRAP_REFITS,
+): Map<string, RankRange> {
+  const rand = mulberry32(BOOTSTRAP_SEED);
+  const ranks = new Map<string, number[]>();
+  for (const p of protocols) ranks.set(p.slug, []);
+  for (let b = 0; b < refits; b++) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < comps.length; i++) sample.push(comps[Math.floor(rand() * comps.length)]!);
+    const curve = fitSizeCurve(sample);
+    const mults = measureMultiples({ as_of: asOf, source: '', floor_usd: 1, protocols: sample, watchlist: [] }, model);
+    const scored = protocols.map((p) => ({ slug: p.slug, implied: impliedValue(p, asOf, mults, curve, odds, model).implied }));
+    scored.sort((x, y) => y.implied - x.implied || (x.slug < y.slug ? -1 : x.slug > y.slug ? 1 : 0));
+    scored.forEach((s, i) => ranks.get(s.slug)!.push(i + 1));
+  }
+  const out = new Map<string, RankRange>();
+  for (const [slug, rs] of ranks) {
+    const sorted = [...rs].sort((a, b) => a - b);
+    out.set(slug, {
+      low: sorted[Math.floor(0.1 * sorted.length)]!,
+      high: sorted[Math.min(sorted.length - 1, Math.floor(0.9 * sorted.length))]!,
+      top20_frac: round4(rs.filter((r) => r <= 20).length / rs.length),
+    });
+  }
+  return out;
+}
+
+/** The age buckets the tenure chart reads: how long a protocol has run, in days. */
+const TENURE_BUCKETS: { label: string; lo: number; hi: number }[] = [
+  { label: '<90d', lo: 0, hi: 90 },
+  { label: '90–180d', lo: 90, hi: 180 },
+  { label: '180–365d', lo: 180, hi: 365 },
+  { label: '1–2y', lo: 365, hi: 730 },
+  { label: '2–3y', lo: 730, hi: 1095 },
+  { label: '>3y', lo: 1095, hi: Infinity },
+];
+
+/** Launch history by tenure: for each age bucket, the traded share of the protocols that old. */
+export function tenureStats(snapshot: Snapshot): TenureBucket[] {
+  const out: TenureBucket[] = TENURE_BUCKETS.map((b) => ({ bucket: b.label, total: 0, launched: 0, share: 0 }));
+  const unknown = { bucket: 'unknown', total: 0, launched: 0, share: 0 };
+  for (const p of snapshot.protocols) {
+    const age = ageDays(snapshot.as_of, p.listed_at);
+    const slot = age === null ? unknown : out.find((_, i) => age >= TENURE_BUCKETS[i]!.lo && age < TENURE_BUCKETS[i]!.hi);
+    if (slot === undefined) continue;
+    slot.total++;
+    if (!isPreToken(p)) slot.launched++;
+  }
+  for (const s of [...out, unknown]) s.share = s.total === 0 ? 0 : round4(s.launched / s.total);
+  return unknown.total > 0 ? [...out, unknown] : out;
+}
+
+/** The scatter chart's data: the comps as (TVL, market cap) points, and the P25–P75 band of mcap/curve around the fitted curve. */
+export function scatterData(snapshot: Snapshot, curve: SizeCurve): ScatterData {
+  const comps = compsOf(snapshot);
+  const ratios = comps.map((p) => (p.mcap_usd as number) / curveValue(p.tvl_usd, curve));
+  return {
+    points: comps.map((p) => [p.tvl_usd, p.mcap_usd as number] as [number, number]),
+    band_low: round4(quantile(ratios, 0.25)),
+    band_high: round4(quantile(ratios, 0.75)),
+  };
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; bootstrap: BootstrapResult } {
   const multiples = measureMultiples(snapshot, model);
   const curve = fitSizeCurve(compsOf(snapshot));
   const odds = measureLaunchOdds(snapshot, model);
@@ -714,8 +874,14 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     return { p, econ, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return scored.map((s, i) => ({
+  const ranges = bootstrapRankRanges(scored.map((s) => s.p), snapshot.as_of, compsOf(snapshot), odds, model);
+  const top20Hold = scored
+    .slice(0, 20)
+    .filter((s) => (ranges.get(s.p.slug)?.top20_frac ?? 0) >= 0.8).length;
+  const board = scored.map((s, i) => ({
     rank: i + 1,
+    rank_low: ranges.get(s.p.slug)?.low ?? i + 1,
+    rank_high: ranges.get(s.p.slug)?.high ?? i + 1,
     slug: s.p.slug,
     name: s.p.name,
     category: s.p.category,
@@ -723,7 +889,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     tvl_usd: s.p.tvl_usd,
     change_7d: s.p.change_7d,
     listed_at: s.p.listed_at,
-    token_status: 'pre-token',
+    token_status: 'pre-token' as const,
     age_days: s.age,
     implied_value_usd: s.implied,
     implied_low_usd: s.impliedLow,
@@ -741,6 +907,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     farm_econ: s.econ,
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
+  return { board, bootstrap: { refits: BOOTSTRAP_REFITS, top20_hold: top20Hold } };
 }
 
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
@@ -1027,6 +1194,8 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 export function radarRow(row: BoardRow): RadarRow {
   return {
     rank: row.rank,
+    rank_low: row.rank_low,
+    rank_high: row.rank_high,
     slug: row.slug,
     name: row.name,
     category: row.category,
@@ -1053,13 +1222,15 @@ export function radarRow(row: BoardRow): RadarRow {
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const multiples = measureMultiples(snapshot, model);
-  const board = buildBoard(snapshot, model);
+  const { board, bootstrap } = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
   const curve = fitSizeCurve(compsOf(snapshot));
   const odds = measureLaunchOdds(snapshot, model);
   const calibration = calibrateModel(snapshot, multiples, curve, odds, model);
   const oos = outOfSample(snapshot, model);
   const audit = auditCounts(snapshot);
+  const tenure = tenureStats(snapshot);
+  const scatter = scatterData(snapshot, curve);
   const index = bySlug(snapshot.protocols);
   const watchlistTvl = snapshot.watchlist.reduce((n, s) => n + (index.get(s)?.tvl_usd ?? 0), 0);
   const impliedValues = board.map((r) => r.implied_value_usd);
@@ -1085,6 +1256,9 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     curve,
     oos,
     audit,
+    bootstrap,
+    tenure,
+    scatter,
     rows: board.map(radarRow),
     live,
   };
