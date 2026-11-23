@@ -1,4 +1,4 @@
-// Token Radar (radar-5): a program/v1 entry for make.fun's token-radar-01.
+// Token Radar (radar-6): a program/v1 entry for make.fun's token-radar-01.
 //
 // Reads the sealed DefiLlama snapshot, scores every rankable pre-token
 // protocol with the model in lib/model.ts, and writes the entry's outputs:

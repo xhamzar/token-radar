@@ -1,4 +1,4 @@
-// Token Radar's value model (radar-5): the snapshot's own market prices the
+// Token Radar's value model (radar-6): the snapshot's own market prices the
 // protocols that have no token yet.
 //
 // Idea: a protocol's token, if it launched today, would be priced the way the
@@ -59,6 +59,10 @@
 // which the dashboard reports next to the formula.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 export interface SnapshotProtocol {
   slug: string;
   name: string;
@@ -103,6 +107,7 @@ export interface ModelConstants {
   momentum_growth_cap: number;
   drop_share: number;
   odds_prior: number;
+  forgone_yield: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -126,10 +131,11 @@ export const MODEL: ModelConstants = {
   momentum_growth_cap: 100,
   drop_share: 0.07,
   odds_prior: 10,
+  forgone_yield: 0.04,
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 
 /** How many live-token protocols the Live tab carries, by market cap. */
 export const LIVE_ROWS = 48;
@@ -141,10 +147,11 @@ export interface FarmStep {
   time: string;
 }
 
-/** One row's farm economics at its own deposit: the expected drop, the fees, the net, the break-even odds and the verdict. */
+/** One row's farm economics at its own deposit: the expected drop, the fees, the net, the break-even odds and the verdict. Netted twice: at the implied value and at the low end of the band. ROBUST pays even at the low end. */
 export interface FarmEcon {
   deposit_usd: number; slice_usd: number; fees_usd: number; hours: number;
-  net_usd: number; net_per_hour_usd: number; break_even_odds: number; verdict: 'FARM' | 'THIN' | 'SKIP';
+  net_usd: number; net_per_hour_usd: number; break_even_odds: number; verdict: 'ROBUST' | 'FARM' | 'THIN' | 'SKIP';
+  net_low_usd: number; forgone_usd: number;
 }
 
 /** One row of board.json: the ranked board's row. */
@@ -236,12 +243,15 @@ export interface Calibration {
 /** The fitted size curve: log10(market cap) = a + b x log10(TVL) over the traded tokens. */
 export interface SizeCurve { a: number; b: number; n: number; r2: number; }
 
-/** The out-of-sample test: leave-one-out and time-split misses against a flat multiple, the ablation, and how often the printed band holds. */
+/** The out-of-sample test: leave-one-out and time-split misses against a flat multiple, the ablation, and how often the printed band holds. Plus a 5-fold split stratified by size, a category-blind split (each category priced with no peer of its own), and the launch odds' Brier score against the base rate. */
 export interface OosResult {
   loo_n: number; loo_median_miss: number; loo_within3x: number; loo_flat_miss: number;
   time_n: number; time_median_miss: number; time_within3x: number; time_flat_miss: number;
   bands_hold: number; bands_n: number;
   ablation: { variant: string; loo_miss: number }[];
+  fold5_n: number; fold5_median_miss: number; fold5_within3x: number; fold5_flat_miss: number;
+  catblind_n: number; catblind_median_miss: number; catblind_within3x: number; catblind_flat_miss: number;
+  brier_odds: number; brier_base: number; brier_split_half: number;
 }
 
 /** The audit: every one of the snapshot's protocols, counted under exactly one disposition. */
@@ -277,6 +287,7 @@ export interface RadarData {
   floor_usd: number;
   model: ModelConstants;
   model_version: string;
+  main_checksum: string;
   watchlist_size: number;
   board_size: number;
   early_size: number;
@@ -628,18 +639,25 @@ export function calibrateModel(snapshot: Snapshot, multiples: MeasuredMultiples,
   return { sample: ratios.length, median_implied_to_mcap: round4(median(ratios)), median_mcap_to_tvl: round4(multiples.global) };
 }
 
-/** One row's farm economics at its own deposit: the expected airdrop slice, the gas, the net, the break-even launch odds and the verdict. */
-export function farmEcon(p: SnapshotProtocol, age: number | null, implied: number, odds: number, model: ModelConstants): FarmEcon {
+/** One row's farm economics at its own deposit: the expected airdrop slice, the gas plus the forgone yield on the locked capital, the net at the implied value and at the low end of the band, the break-even launch odds and the verdict. ROBUST pays even at the low end of the band; FARM pays from 10% odds, THIN from 33%. */
+export function farmEcon(p: SnapshotProtocol, age: number | null, implied: number, impliedLow: number, odds: number, model: ModelConstants): FarmEcon {
   const deposit = capitalFor(p);
   const slice = (model.drop_share * implied * deposit) / Math.max(p.tvl_usd, 1);
-  const weeks = Math.ceil(holdDaysFor(age) / 7);
+  const sliceLow = (model.drop_share * impliedLow * deposit) / Math.max(p.tvl_usd, 1);
+  const holdDays = holdDaysFor(age);
+  const weeks = Math.ceil(holdDays / 7);
   const gas = gasUsd(chainOf(p)) * (2 + weeks) + (p.chains.length >= 3 && secondChainOf(p) !== null ? gasUsd(secondChainOf(p) as string) * 2 : 0);
   const fees = Math.round(gas * 100) / 100;
+  // The capital sits in the position for the hold: the yield it would have
+  // earned parked in T-bills is a real cost of farming, not a free option.
+  const forgone = Math.round(deposit * model.forgone_yield * (holdDays / 365) * 100) / 100;
+  const costs = fees + forgone;
   const hours = Math.round((0.75 + weeks / 6) * 100) / 100;
-  const net = Math.round((slice - fees) * 100) / 100;
+  const net = Math.round((slice - costs) * 100) / 100;
+  const netLow = Math.round((sliceLow - costs) * 100) / 100;
   const dropIfLaunches = odds > 0 ? slice / odds : slice;
-  const be = dropIfLaunches > 0 ? fees / dropIfLaunches : 1;
-  const verdict = be <= 0.1 ? 'FARM' : be <= 0.33 ? 'THIN' : 'SKIP';
+  const be = dropIfLaunches > 0 ? costs / dropIfLaunches : 1;
+  const verdict = netLow > 0 ? 'ROBUST' : be <= 0.1 ? 'FARM' : be <= 0.33 ? 'THIN' : 'SKIP';
   return {
     deposit_usd: deposit,
     slice_usd: Math.round(slice * 100) / 100,
@@ -649,6 +667,8 @@ export function farmEcon(p: SnapshotProtocol, age: number | null, implied: numbe
     net_per_hour_usd: Math.round((net / Math.max(hours, 0.01)) * 100) / 100,
     break_even_odds: round4(clamp(be, 0, 1)),
     verdict,
+    net_low_usd: netLow,
+    forgone_usd: forgone,
   };
 }
 
@@ -672,7 +692,7 @@ function missOf(pred: number, actual: number): number {
   return Math.max(pred / actual, actual / pred);
 }
 
-/** The out-of-sample test: leave-one-out over the traded tokens, a time split (older half fits, newer half tested), the ablation, and whether the printed band holds. */
+/** The out-of-sample test: leave-one-out over the traded tokens, a time split (older half fits, newer half tested), the ablation, and whether the printed band holds. Plus a 5-fold split stratified by size, a category-blind split, and the launch odds' Brier score. */
 export function outOfSample(snapshot: Snapshot, model: ModelConstants = MODEL): OosResult {
   const comps = compsOf(snapshot);
   const variants = ['flat', 'curve', 'curve+premium', 'full'];
@@ -708,6 +728,64 @@ export function outOfSample(snapshot: Snapshot, model: ModelConstants = MODEL): 
     timeMiss.push(missOf(predictOos(p, snapshot.as_of, timeCurve, timeMults, model, 'full'), actual));
     timeFlat.push(missOf(timeMults.global * p.tvl_usd, actual));
   }
+  // 5-fold, stratified by size: sort by TVL and deal round-robin, so every
+  // fold spans the whole size range and no fold is all giants or all minnows.
+  const bySize = [...comps].sort((a, b) => a.tvl_usd - b.tvl_usd);
+  const folds: SnapshotProtocol[][] = [[], [], [], [], []];
+  bySize.forEach((p, i) => folds[i % 5]!.push(p));
+  const foldMiss: number[] = [];
+  const foldFlat: number[] = [];
+  for (const heldFold of folds) {
+    const heldSlugs = new Set(heldFold.map((p) => p.slug));
+    const train = comps.filter((p) => !heldSlugs.has(p.slug));
+    const sub = { ...snapshot, protocols: snapshot.protocols.filter((p) => !heldSlugs.has(p.slug)) };
+    const mults = measureMultiples(sub, model);
+    const curve = fitSizeCurve(train);
+    for (const p of heldFold) {
+      foldMiss.push(missOf(predictOos(p, snapshot.as_of, curve, mults, model, 'full'), p.mcap_usd as number));
+      foldFlat.push(missOf(mults.global * p.tvl_usd, p.mcap_usd as number));
+    }
+  }
+  // Category-blind: each category priced with no peer of its own in the fit,
+  // so the multiple it gets is the global median's. The hardest honest test
+  // of a model that leans on category premiums.
+  const catMiss: number[] = [];
+  const catFlat: number[] = [];
+  for (const cat of [...new Set(comps.map((p) => p.category ?? 'Other'))]) {
+    const heldCat = comps.filter((p) => (p.category ?? 'Other') === cat);
+    const heldSlugs = new Set(heldCat.map((p) => p.slug));
+    const train = comps.filter((p) => !heldSlugs.has(p.slug));
+    const sub = { ...snapshot, protocols: snapshot.protocols.filter((p) => !heldSlugs.has(p.slug)) };
+    const mults = measureMultiples(sub, model);
+    const curve = fitSizeCurve(train);
+    for (const p of heldCat) {
+      catMiss.push(missOf(predictOos(p, snapshot.as_of, curve, mults, model, 'full'), p.mcap_usd as number));
+      catFlat.push(missOf(mults.global * p.tvl_usd, p.mcap_usd as number));
+    }
+  }
+  // The launch odds' Brier score: the mean squared gap between the odds and
+  // the fact of having launched, against the base rate's. In-sample first,
+  // then split-half (fit the odds on one half of the protocols, score the
+  // other) so the number is not flattered by fitting on the same rows.
+  const odds = measureLaunchOdds(snapshot, model);
+  const brierOf = (protos: SnapshotProtocol[], table: OddsTable): number => {
+    if (protos.length === 0) return 0;
+    let s = 0;
+    for (const p of protos) {
+      const pr = launchOddsFor(p, ageDays(snapshot.as_of, p.listed_at), table, model);
+      s += (pr - (isPreToken(p) ? 0 : 1)) ** 2;
+    }
+    return s / protos.length;
+  };
+  const brierBase =
+    snapshot.protocols.reduce((s, p) => s + (odds.global - (isPreToken(p) ? 0 : 1)) ** 2, 0) / Math.max(snapshot.protocols.length, 1);
+  const sortedProtos = [...snapshot.protocols].sort((a, b) => (a.slug < b.slug ? -1 : 1));
+  const halfA = sortedProtos.filter((_, i) => i % 2 === 0);
+  const halfB = sortedProtos.filter((_, i) => i % 2 === 1);
+  const brierHalf =
+    (brierOf(halfB, measureLaunchOdds({ ...snapshot, protocols: halfA }, model)) * halfB.length +
+      brierOf(halfA, measureLaunchOdds({ ...snapshot, protocols: halfB }, model)) * halfA.length) /
+    Math.max(snapshot.protocols.length, 1);
   const within3 = (xs: number[]): number => (xs.length === 0 ? 0 : xs.filter((x) => x <= 3).length / xs.length);
   return {
     loo_n: comps.length,
@@ -721,6 +799,17 @@ export function outOfSample(snapshot: Snapshot, model: ModelConstants = MODEL): 
     bands_hold: round4(comps.length === 0 ? 0 : bandHits / comps.length),
     bands_n: comps.length,
     ablation: variants.map((v) => ({ variant: v, loo_miss: round4(median(looMiss[v]!)) })),
+    fold5_n: foldMiss.length,
+    fold5_median_miss: round4(median(foldMiss)),
+    fold5_within3x: round4(within3(foldMiss)),
+    fold5_flat_miss: round4(median(foldFlat)),
+    catblind_n: catMiss.length,
+    catblind_median_miss: round4(median(catMiss)),
+    catblind_within3x: round4(within3(catMiss)),
+    catblind_flat_miss: round4(median(catFlat)),
+    brier_odds: round4(brierOf(snapshot.protocols, odds)),
+    brier_base: round4(brierBase),
+    brier_split_half: round4(brierHalf),
   };
 }
 
@@ -870,7 +959,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): {
 
   const scored = [...chosen.values()].map((p) => {
     const v = impliedValue(p, snapshot.as_of, multiples, curve, odds, model);
-    const econ = farmEcon(p, v.age, v.implied, v.launchOdds, model);
+    const econ = farmEcon(p, v.age, v.implied, v.impliedLow, v.launchOdds, model);
     return { p, econ, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -1219,6 +1308,16 @@ export function radarRow(row: BoardRow): RadarRow {
   };
 }
 
+/** The first 8 hex of main.ts's SHA-256: the dashboard's integrity strip shows it, so the page names the exact program that wrote its numbers. Empty when the file cannot be read. */
+export function mainChecksum(): string {
+  try {
+    const here = fileURLToPath(new URL('.', import.meta.url));
+    return createHash('sha256').update(readFileSync(`${here}../main.ts`)).digest('hex').slice(0, 8);
+  } catch {
+    return '';
+  }
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const multiples = measureMultiples(snapshot, model);
@@ -1241,6 +1340,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     floor_usd: snapshot.floor_usd,
     model,
     model_version: MODEL_VERSION,
+    main_checksum: mainChecksum(),
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: early,
